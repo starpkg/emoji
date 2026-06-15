@@ -69,6 +69,78 @@ func TestSortedCarpedmFullyQualifiedFirst(t *testing.T) {
 	}
 }
 
+// The full status ordering must be fully-qualified (2) < component (1) <
+// minimally-qualified (3) < unqualified (4) < unknown, with glyph as the tie
+// breaker, so the generated table is deterministic regardless of map order.
+func TestSortedCarpedmFullOrderAndTies(t *testing.T) {
+	m := map[string]carpedmEntry{
+		"z2": {En: ":z2:", Status: 2}, // fully-qualified, later glyph
+		"a2": {En: ":a2:", Status: 2}, // fully-qualified, earlier glyph
+		"c1": {En: ":c1:", Status: 1}, // component
+		"m3": {En: ":m3:", Status: 3}, // minimally-qualified
+		"u4": {En: ":u4:", Status: 4}, // unqualified
+		"x9": {En: ":x9:", Status: 9}, // unknown status -> ranks last
+	}
+	got := sortedCarpedm(m)
+	wantGlyphOrder := []string{"a2", "z2", "c1", "m3", "u4", "x9"}
+	if len(got) != len(wantGlyphOrder) {
+		t.Fatalf("sortedCarpedm len = %d, want %d", len(got), len(wantGlyphOrder))
+	}
+	for i, g := range wantGlyphOrder {
+		if got[i].glyph != g {
+			t.Errorf("sortedCarpedm[%d].glyph = %q, want %q (full order: %v)", i, got[i].glyph, g, wantGlyphOrder)
+		}
+	}
+}
+
+// build must count (and skip) conflicting forward aliases: when two distinct
+// glyphs claim the same bare alias, the first writer wins and the conflict is
+// tallied as a collision; an identical re-assignment is not a collision.
+func TestBuildCollisions(t *testing.T) {
+	gemoji := []gemojiEntry{
+		{Emoji: "\U0001F600", Aliases: []string{"dup", "grinning"}},
+	}
+	carpedm := map[string]carpedmEntry{
+		// "dup" already maps to U+1F600 via gemoji; a different glyph claiming it
+		// is a collision and must be skipped (first writer wins).
+		"\U0001F601": {En: ":dup:", Status: 2},
+		// re-stating the same (alias -> same glyph) is NOT a collision.
+		"\U0001F600": {En: ":dup:", Status: 2},
+	}
+	forward, _, _, collisions := build(carpedm, gemoji)
+	if forward["dup"] != "\U0001F600" {
+		t.Errorf("first writer must win: forward[dup] = %q, want U+1F600", forward["dup"])
+	}
+	if collisions != 1 {
+		t.Errorf("collisions = %d, want exactly 1 (the conflicting glyph)", collisions)
+	}
+}
+
+// An empty alias or empty glyph must be ignored by addForward (the early return),
+// and a carpedm entry whose en/alias is just colons reduces to an empty alias.
+func TestBuildSkipsEmpty(t *testing.T) {
+	gemoji := []gemojiEntry{
+		{Emoji: "\U0001F680", Aliases: []string{"", "rocket"}}, // "" alias skipped
+	}
+	carpedm := map[string]carpedmEntry{
+		"\U0001F4A9": {En: "::", Status: 2}, // bare("::") == "" -> no forward entry
+	}
+	forward, reverse, names, _ := build(carpedm, gemoji)
+	if _, ok := forward[""]; ok {
+		t.Error("empty alias must not be added to the forward map")
+	}
+	if forward["rocket"] != "\U0001F680" {
+		t.Errorf("non-empty alias still added: forward[rocket] = %q", forward["rocket"])
+	}
+	// The poo glyph still gets a reverse/name entry from its (empty) en humanized.
+	if reverse["\U0001F4A9"] != "" {
+		t.Errorf("reverse for empty-en glyph = %q, want empty bare alias", reverse["\U0001F4A9"])
+	}
+	if names["\U0001F4A9"] != "" {
+		t.Errorf("name for empty-en glyph = %q, want empty humanized name", names["\U0001F4A9"])
+	}
+}
+
 func TestMustReadJSONAndWriteGo(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "in.json")
