@@ -12,12 +12,18 @@ the **local** side: it is a pure, offline text utility. There is no network, no
 service, and no credentials; at run time the module reads only embedded Go maps
 and does pure Unicode arithmetic, so it has **zero third-party data dependencies**.
 
+## Overview
+
 It converts between text and emoji two ways:
 
 - **Shortcodes** — `:rocket:` ⇄ 🚀, driven by a generated data table that merges
-  several actively-maintained upstream datasets (see [Data](#data--the-conversion-pipeline)).
+  several actively-maintained upstream datasets (see [Data](#data)).
 - **Look-alikes** — turn a plain number, clock time, letter, or punctuation mark
   into the most similar emoji: `42` → 4️⃣2️⃣, `3:30` → 🕞, `AB` → 🇦🇧, `!?` → ❗❓.
+
+For the complete per-builtin reference — signatures, parameters, returns,
+errors, examples — and the configuration accessors, see
+**[docs/API.md](docs/API.md)**.
 
 ## Installation
 
@@ -27,7 +33,8 @@ go get github.com/starpkg/emoji
 
 ## Quick start
 
-### In Go
+Wire the module into a Starlet interpreter, then `load("emoji", …)` from a
+script:
 
 ```go
 package main
@@ -54,7 +61,7 @@ out = emojize("ship it :rocket::tada:")
 }
 ```
 
-### In Starlark
+From Starlark:
 
 ```python
 load("emoji", "emojize", "demojize", "convert", "number_to_emoji", "time_to_emoji")
@@ -68,199 +75,43 @@ convert("AB", kind="letter")              # 🇦🇧
 convert(":fire:")                         # 🔥  (auto-detected emojize)
 ```
 
-## Starlark API
+## Starlark API at a glance
 
-The module exposes twelve script-facing builtins. They split into a
-shortcode group (backed by the data table) and a look-alike group (pure Unicode
-arithmetic). All are pure and deterministic; every text-accepting builtin bounds
-its input by `max_input_bytes` (see [Host configuration](#host-configuration)).
+Top-level builtins (`load("emoji", …)`). Shortcode group (backed by the data
+table):
 
-### Shortcode ⇄ emoji
+- `emojize(text)` — replace every known `:shortcode:` with its emoji glyph.
+- `demojize(text, delimiters?)` — the inverse; replace glyphs with `:shortcodes:`.
+- `get(name)` — emoji glyph for a single shortcode, or `None`.
+- `name(emoji)` — canonical shortcode for a single glyph, or `None`.
+- `describe(emoji)` — human-readable name for a single glyph, or `None`.
 
-#### `emojize(text)`
+Look-alike group (pure Unicode arithmetic):
 
-Replaces every known `:shortcode:` in `text` with its emoji glyph and returns
-the result string. Unknown tokens are left untouched; a `:flag-xx:` /
-`:flag_xx:` token whose two-letter code is not in the table falls back to the
-corresponding regional-indicator flag sequence. Accepts a string or bytes.
+- `number_to_emoji(value, keycap_ten?)` — digits → keycap emoji.
+- `emoji_to_number(text)` — the inverse; keycap emoji → digits.
+- `time_to_emoji(value, minute?)` — a time → the nearest clock-face emoji.
+- `letter_to_emoji(text, style?)` — letters → regional / squared / circled emoji.
+- `symbol_to_emoji(text)` — punctuation `! ? # * + - / × ÷` → symbol emoji.
 
-```python
-emojize("ship it :rocket: :no_such_code:")   # ship it 🚀 :no_such_code:
-emojize(":flag-fr:")                          # 🇫🇷
-```
+Dispatcher and metadata:
 
-#### `demojize(text, delimiters=(":", ":"))`
+- `convert(value, kind?)` — dispatch to a conversion family (default `kind="auto"`).
+- `info()` — a dict describing the embedded dataset.
 
-The inverse of `emojize`: replaces every emoji glyph in `text` with its
-`:shortcode:`, returning the result string. The scan is longest-match, so
-multi-rune sequences (variation selectors, ZWJ joins) win. `delimiters` is an
-optional `(open, close)` pair of strings (a tuple or a list); it defaults to
-`(":", ":")`. Accepts a string or bytes.
+See **[docs/API.md](docs/API.md)** for the full signatures, return values,
+errors, and examples of every builtin above.
 
-```python
-demojize("i ❤️ 🚀")                            # i :heart: :rocket:
-demojize("hi 🚀", delimiters=("[", "]"))      # hi [rocket]
-```
+## Configuration
 
-#### `get(name)`
+The module's single option, `max_input_bytes`, bounds the input size of text
+conversions. It is configured via the `EMOJI_MAX_INPUT_BYTES` environment
+variable or the generated `get_max_input_bytes` / `set_max_input_bytes` accessor
+builtins. See the
+[Configuration section of docs/API.md](docs/API.md#configuration) for the full
+option table, default, and accessors.
 
-Returns the emoji glyph for a single shortcode, or `None` if the shortcode is
-unknown. Surrounding colons are optional, so `get("rocket")` and
-`get(":rocket:")` are equivalent. A `flag-xx` code falls back to a
-regional-indicator flag.
-
-```python
-get("rocket")    # 🚀
-get(":rocket:")  # 🚀
-get("nope")      # None
-```
-
-#### `name(emoji)`
-
-Returns the primary (canonical) shortcode for a single emoji glyph, without
-colons, or `None` if the glyph is not in the table.
-
-```python
-name("🚀")   # "rocket"
-```
-
-#### `describe(emoji)`
-
-Returns the human-readable name for a single emoji glyph, or `None` if the glyph
-is not in the table. The name comes from the source datasets (GitHub's
-description where available, otherwise the de-underscored canonical shortcode).
-
-```python
-describe("🚀")   # "rocket"
-```
-
-### Look-alike conversions
-
-#### `number_to_emoji(value, keycap_ten=False)`
-
-Maps each ASCII digit in `value` to its keycap emoji and returns the result
-string; `-` and `+` become the heavy minus/plus dingbats, and any other
-character passes through unchanged. `value` may be an int, a float, or a string.
-When `keycap_ten=True` and the whole input is exactly `10`, the dedicated
-🔟 (KEYCAP TEN) glyph is emitted instead of two keycaps.
-
-```python
-number_to_emoji(42)                 # 4️⃣2️⃣
-number_to_emoji(10, keycap_ten=True)  # 🔟
-number_to_emoji(3.5)                # 3️⃣.5️⃣
-```
-
-#### `emoji_to_number(text)`
-
-The inverse of `number_to_emoji`: keycap sequences become their digit,
-🔟 becomes `10`, the heavy plus/minus become `+`/`-`, and every other rune
-passes through unchanged. Returns the result string. Accepts a string or bytes.
-
-```python
-emoji_to_number("4️⃣2️⃣")   # "42"
-```
-
-#### `time_to_emoji(value, minute=None)`
-
-Returns the single clock-face emoji nearest to a time. `value` is either an int
-hour (with the optional `minute` int) or a `"H"` / `"H:MM"` string. Only `:00`
-and `:30` faces exist, so the minute is rounded to the nearest half hour
-(round-half-up: `:15` → `:30`, `:45` → next hour). The hour is taken mod 12, so
-AM and PM share a face. An out-of-range hour (`0`–`23`) or minute (`0`–`59`)
-is an error.
-
-```python
-time_to_emoji("3:30")        # 🕞
-time_to_emoji(15, minute=30) # 🕞  (15:30 shares the 3:30 face)
-```
-
-#### `letter_to_emoji(text, style="regional")`
-
-Maps Latin letters in `text` to emoji in one of three styles, returning the
-result string; runes with no mapping in the chosen style pass through unchanged.
-
-- `regional` (default): `A`–`Z` → regional-indicator symbols (`🇦`). Two adjacent
-  indicators that form a valid country code render as that flag.
-- `squared` (alias `button`): `A`–`Z` → negative-squared latin capitals. Only
-  `A`/`B`/`O`/`P` are colour emoji (🅰️); the rest render as monochrome symbols.
-- `circled`: `A`–`Z` and `a`–`z` → circled latin letters (`Ⓐ`), monochrome.
-
-An unknown `style` is an error.
-
-```python
-letter_to_emoji("AB")                  # 🇦🇧
-letter_to_emoji("A", style="squared")  # 🅰️
-letter_to_emoji("a", style="circled")  # ⓐ
-```
-
-#### `symbol_to_emoji(text)`
-
-Maps the well-defined punctuation characters `! ? # * + - / × ÷` in `text` to
-their emoji and returns the result string; every other character passes through
-unchanged.
-
-```python
-symbol_to_emoji("!?")   # ❗❓
-symbol_to_emoji("#")    # #️⃣
-symbol_to_emoji("50%!") # 50%❗
-```
-
-### Dispatcher and metadata
-
-#### `convert(value, kind="auto")`
-
-One entry point that dispatches to the conversion family named by `kind` and
-returns the result string. Recognised kinds: `auto`, `emojize`, `demojize`,
-`number`, `time`, `letter`, `symbol`. With `kind="auto"` (the default), ints and
-floats are treated as `number`, an in-range `"H:MM"` string as `time`, and any
-other string as `emojize`. The `letter` dispatch uses the `regional` style. A
-time-shaped but out-of-range string (e.g. `"99:99"`) degrades to `emojize` under
-`auto` rather than erroring. An unknown `kind` is an error.
-
-```python
-convert(42)                    # 4️⃣2️⃣  (auto → number)
-convert("3:30")                # 🕞     (auto → time)
-convert(":fire:")              # 🔥     (auto → emojize)
-convert("AB", kind="letter")   # 🇦🇧
-convert("🚀", kind="demojize")  # :rocket:
-```
-
-#### `info()`
-
-Returns a dict describing the embedded dataset — useful for verifying which
-emoji generation the module was built against. Keys: `primary_source`,
-`secondary_source`, `emoji_version`, `shortcode_count`, `emoji_count`.
-
-```python
-info()["emoji_version"]   # "17.0"
-info()["shortcode_count"] # e.g. 4000+
-```
-
-## Host configuration
-
-Text conversions bound their input before processing it, so a hostile or buggy
-script cannot force an unbounded allocation. The single config option:
-
-| Option | Type | Default | Environment Variable | Description |
-|--------|------|---------|----------------------|-------------|
-| `max_input_bytes` | `int` | `5242880` | `EMOJI_MAX_INPUT_BYTES` | Maximum input size in bytes for text conversions (5 MiB); `0` disables the cap. |
-
-The option can be set three ways:
-
-- **Environment** — set `EMOJI_MAX_INPUT_BYTES` before the module is loaded.
-- **From Starlark** — the configurable-module layer (`starpkg/base`) auto-exposes
-  a setter/getter pair for the option: `set_max_input_bytes(value)` updates the
-  cap and `get_max_input_bytes()` returns the current value.
-- **From Go** — construct with `NewModule()` (default) and configure via `base`.
-
-```python
-load("emoji", "set_max_input_bytes", "get_max_input_bytes", "emojize")
-set_max_input_bytes(1024)        # cap input at 1 KiB
-get_max_input_bytes()            # 1024
-emojize(":rocket:")              # 🚀  (well under the cap)
-```
-
-## Data & the conversion pipeline
+## Data
 
 The shortcode table is **not** a runtime dependency on any single (and possibly
 stale) emoji library. It is generated, offline, by merging pinned datasets from
@@ -271,28 +122,11 @@ different language ecosystems into one Go table:
 | [carpedm20/emoji](https://github.com/carpedm20/emoji) | Python | `v2.15.0` | Spine: the freshest, fullest shortcode set (Emoji 17.0), aliases, names. |
 | [github/gemoji](https://github.com/github/gemoji) | Ruby | `v4.1.0` | GitHub's canonical `:shortcodes:` (`:smile:`, `:+1:`) + tidy descriptions. |
 
-```
-data/sources/*.json   →   internal/gen   →   tables_gen.go   →   module
-  (vendored, pinned)      (merge, dedupe)     (generated Go)      (runtime)
-```
-
 `internal/gen` reads the vendored JSON, applies gemoji first (so its well-known
 short aliases win) then carpedm20 (which fills the gaps and the newest emoji),
 and writes `tables_gen.go`. Output is deterministic — sorted, ASCII-escaped, no
 timestamps — so **refreshing the data is a reviewable diff**, not a black box.
-
-Refreshing:
-
-```bash
-./data/fetch.sh      # pull the pinned source files into data/sources/
-go generate ./...    # rebuild tables_gen.go from them
-go test ./...        # verify
-```
-
-To bump to a newer release, edit the version in `data/fetch.sh` (and the
-provenance constants in `internal/gen`), re-run the two commands, and review the
-diff. New sources can be added by teaching `internal/gen` one more parser. See
-[`data/SOURCES.md`](data/SOURCES.md) for provenance and licenses.
+See [`data/SOURCES.md`](data/SOURCES.md) for provenance and licenses.
 
 ## License
 
