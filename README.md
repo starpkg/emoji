@@ -2,6 +2,8 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/starpkg/emoji.svg)](https://pkg.go.dev/github.com/starpkg/emoji)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![codecov](https://codecov.io/gh/starpkg/emoji/graph/badge.svg)](https://codecov.io/gh/starpkg/emoji)
+![binary footprint](https://img.shields.io/badge/binary_footprint-%2B0.9_MB-blue)
 
 `emoji` is an **L4 domain module** of the Star\* ecosystem. The ecosystem's
 remit is *support for necessary **local** operations plus simple abstractions
