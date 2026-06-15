@@ -84,6 +84,11 @@ g2 = get(":rocket:")
 missing = get("definitely_not_a_code")
 n = name("\U0001F680")
 d = describe("\U0001F680")
+# 💪 is a glyph whose short alias ("muscle") differs from its human-readable
+# description ("flexed biceps"), so it proves name() reads the reverse-alias
+# table and describe() reads the names table (not the same map).
+n_muscle = name("\U0001F4AA")
+d_muscle = describe("\U0001F4AA")
 `)
 	if got := res["g1"].(string); got != rocket {
 		t.Errorf("get(rocket) = %q, want 🚀", got)
@@ -99,6 +104,13 @@ d = describe("\U0001F680")
 	}
 	if got := res["d"].(string); got != "rocket" {
 		t.Errorf("describe(🚀) = %q, want rocket", got)
+	}
+	// name() returns the short shortcode alias; describe() returns the human name.
+	if got := res["n_muscle"].(string); got != "muscle" {
+		t.Errorf("name(💪) = %q, want muscle (short alias)", got)
+	}
+	if got := res["d_muscle"].(string); got != "flexed biceps" {
+		t.Errorf("describe(💪) = %q, want flexed biceps (human name)", got)
 	}
 }
 
