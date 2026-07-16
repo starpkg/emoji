@@ -11,6 +11,7 @@ package emoji
 //   - pure helpers: parseDelimiters / textOf / autoKind / upper / regionalPair
 
 import (
+	"math/big"
 	"strings"
 	"testing"
 
@@ -388,6 +389,14 @@ symbol_to_emoji("!!!!!!!!!!")`,
 emoji_to_number("1234567890")`,
 		"demojize": `load("emoji","demojize")
 demojize("xxxxxxxxxx")`,
+		"emojize": `load("emoji","emojize")
+emojize("xxxxxxxxxx")`,
+		"get": `load("emoji","get")
+get("xxxxxxxxxx")`,
+		"name": `load("emoji","name")
+name("xxxxxxxxxx")`,
+		"describe": `load("emoji","describe")
+describe("xxxxxxxxxx")`,
 		// a bytes time value is bounded by checkValueSize before parsing.
 		"time_to_emoji_bytes": `load("emoji","time_to_emoji")
 time_to_emoji(b"1234567890")`,
@@ -512,18 +521,66 @@ emojize("this is long :smile:")
 			t.Errorf("get_max_input_bytes should be loadable: %v", err)
 		}
 	})
-	// A huge integer is rejected by its decimal length before the number path
-	// expands each digit into a multi-byte keycap emoji.
-	t.Run("huge int rejected", func(t *testing.T) {
-		// 1 << 30000000 is a ~30M-bit int (~9M decimal digits), past the 5 MiB cap.
+	// An over-cap integer is rejected by its decimal length before the number
+	// path expands each digit into a multi-byte keycap emoji. (Uses a tiny cap +
+	// modest int so it reaches checkIntSize; the pinned evaluator caps `<<` at
+	// 512, so a huge shift would error before the builtin runs — see TestCheckIntSize
+	// for the genuinely-huge big.Int path.)
+	t.Run("over-cap int rejected", func(t *testing.T) {
+		t.Setenv("EMOJI_MAX_INPUT_BYTES", "5")
 		_, err := run(t, `
 load("emoji","number_to_emoji")
-number_to_emoji(1 << 30000000)
+number_to_emoji(1234567)
 `)
 		if err == nil || !strings.Contains(err.Error(), "too large") {
-			t.Errorf("expected a too-large error for a huge int, got %v", err)
+			t.Errorf("expected a too-large error for an over-cap int, got %v", err)
 		}
 	})
+	// demojize's delimiters are wrapped around every shortcode, so a huge one is
+	// rejected up front to prevent output amplification.
+	t.Run("huge delimiter rejected", func(t *testing.T) {
+		_, err := run(t, `
+load("emoji","demojize")
+demojize("hi", delimiters=("X" * 1000, ""))
+`)
+		if err == nil || !strings.Contains(err.Error(), "delimiter exceeds") {
+			t.Errorf("expected a delimiter-too-large error, got %v", err)
+		}
+	})
+}
+
+// TestCheckIntSize exercises the integer decimal-length bound directly, so it can
+// cover a genuinely-huge big.Int (the Starlark evaluator caps `<<` at 512, so a
+// huge value can't be built in-script) plus the zero/negative/boundary cases.
+func TestCheckIntSize(t *testing.T) {
+	t.Setenv("EMOJI_MAX_INPUT_BYTES", "5")
+	m := NewModule()
+	pass := func(x starlark.Int, label string) {
+		if err := m.checkIntSize(x); err != nil {
+			t.Errorf("%s should pass a 5-byte cap: %v", label, err)
+		}
+	}
+	fail := func(x starlark.Int, label string) {
+		if err := m.checkIntSize(x); err == nil {
+			t.Errorf("%s should exceed a 5-byte cap", label)
+		}
+	}
+	pass(starlark.MakeInt(0), "0")
+	pass(starlark.MakeInt(12), "12")
+	pass(starlark.MakeInt(9999), "9999") // 4 digits, estimate 5 == cap
+	fail(starlark.MakeInt(1234567), "1234567")
+	// A negative number counts its '-' sign: -9999 is "−9999" (5 digits + sign).
+	fail(starlark.MakeInt(-9999), "-9999")
+	// A genuinely huge big.Int (~30M bits ≈ 9M digits) is rejected without ever
+	// materializing its decimal string.
+	huge := starlark.MakeBigInt(new(big.Int).Lsh(big.NewInt(1), 30_000_000))
+	fail(huge, "1<<30000000")
+	// A disabled cap (0) lets any magnitude through.
+	t.Setenv("EMOJI_MAX_INPUT_BYTES", "0")
+	m0 := NewModule()
+	if err := m0.checkIntSize(huge); err != nil {
+		t.Errorf("cap 0 should disable the int bound: %v", err)
+	}
 }
 
 // --- pure helpers ------------------------------------------------------------

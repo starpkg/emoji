@@ -97,9 +97,14 @@ can read the cap but can neither widen nor zero it at runtime. This requires
    `checkValueSize` bounds `Int` arguments by their **decimal length**
    (`checkIntSize`, ≈ `BitLen * 0.302`) so a huge integer is rejected *before* its
    unbounded decimal string is materialized — the default arm must never silently
-   pass an `Int` through. New text entry points must route through these checks.
-   The cap itself is **host-only** (see the Dependency-on-base note): a script
-   cannot re-widen or zero it via a `set_` builtin at runtime.
+   pass an `Int` through. New text entry points must route through these checks —
+   **all** text-accepting builtins do, including `get`/`name`/`describe` (a
+   real gap: they once looked up an unbounded selector/glyph without checking).
+   `demojize`'s `open`/`close` delimiters are separately capped at
+   `maxDelimiterBytes` (64) because they wrap every shortcode, so a huge one would
+   amplify a small input into an unbounded output. The cap itself is **host-only**
+   (see the Dependency-on-base note): a script cannot re-widen or zero it via a
+   `set_` builtin at runtime.
 2. **No host panics from script input.** Builtins validate argument types and
    return script-level errors (`UnpackArgs`, the `default:` arms in `numericText`
    / `parseTimeValue` / `textOf`), never `panic`.

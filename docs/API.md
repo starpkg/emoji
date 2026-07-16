@@ -57,7 +57,9 @@ The inverse of `emojize`: replaces every emoji glyph in `text` with its
 
 - `text` (string or bytes): The input to scan for emoji glyphs.
 - `delimiters` (tuple or list, optional): An `(open, close)` pair of strings
-  wrapping each replaced shortcode. Defaults to `(":", ":")`.
+  wrapping each replaced shortcode. Defaults to `(":", ":")`. Each delimiter is
+  bounded at 64 bytes — they wrap every shortcode, so a huge delimiter would
+  amplify a small input into an unbounded output.
 
 **Returns:** The result string with emoji glyphs replaced by delimited
 shortcodes.
@@ -66,7 +68,7 @@ shortcodes.
 selectors, ZWJ joins) win over their shorter prefixes.
 
 **Errors:** Raises a script error if `delimiters` is not a 2-element pair of
-strings, or if `text` exceeds `max_input_bytes`.
+strings, if a delimiter exceeds 64 bytes, or if `text` exceeds `max_input_bytes`.
 
 **Example:**
 

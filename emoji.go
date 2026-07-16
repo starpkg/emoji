@@ -132,7 +132,14 @@ func (m *Module) checkIntSize(x starlark.Int) error {
 	if maxBytes <= 0 {
 		return nil
 	}
-	if int64(x.BigInt().BitLen())*302/1000+1 > int64(maxBytes) {
+	bi := x.BigInt()
+	// Upper bound on decimal digits: B*log10(2)+1 < B*0.302+1. A negative number
+	// adds one byte for the '-' sign.
+	digits := int64(bi.BitLen())*302/1000 + 1
+	if bi.Sign() < 0 {
+		digits++
+	}
+	if digits > int64(maxBytes) {
 		return fmt.Errorf("%s: number is too large (decimal length exceeds max_input_bytes %d)", ModuleName, maxBytes)
 	}
 	return nil
@@ -238,12 +245,23 @@ func (m *Module) demojize(thread *starlark.Thread, b *starlark.Builtin, args sta
 	if err != nil {
 		return none, fmt.Errorf("%s: %w", b.Name(), err)
 	}
+	// Delimiters are wrapped around every shortcode, so a large one amplifies a
+	// small input into an unbounded output; cap them at a small constant.
+	if len(open) > maxDelimiterBytes || len(closing) > maxDelimiterBytes {
+		return none, fmt.Errorf("%s: delimiter exceeds %d bytes", b.Name(), maxDelimiterBytes)
+	}
 	s := text.GoString()
 	if err := m.checkInputSize(s); err != nil {
 		return none, err
 	}
 	return starlark.String(demojizeText(s, open, closing)), nil
 }
+
+// maxDelimiterBytes bounds demojize's open/close delimiters. They are short
+// markers (e.g. ":"); a large one would be repeated around every shortcode,
+// amplifying a small input into an unbounded output. 64 is far beyond any real
+// delimiter yet keeps the per-shortcode expansion a small constant.
+const maxDelimiterBytes = 64
 
 // parseDelimiters reads an optional (open, close) pair of strings; the default
 // is (":", ":").
@@ -279,6 +297,9 @@ func (m *Module) get(thread *starlark.Thread, b *starlark.Builtin, args starlark
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "name", &nameArg); err != nil {
 		return none, err
 	}
+	if err := m.checkInputSize(nameArg); err != nil {
+		return none, err
+	}
 	bare := strings.Trim(nameArg, ":")
 	if glyph, ok := dataForward[bare]; ok {
 		return starlark.String(glyph), nil
@@ -294,6 +315,9 @@ func (m *Module) name(thread *starlark.Thread, b *starlark.Builtin, args starlar
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "emoji", &glyph); err != nil {
 		return none, err
 	}
+	if err := m.checkInputSize(glyph); err != nil {
+		return none, err
+	}
 	if n, ok := dataReverse[glyph]; ok {
 		return starlark.String(n), nil
 	}
@@ -303,6 +327,9 @@ func (m *Module) name(thread *starlark.Thread, b *starlark.Builtin, args starlar
 func (m *Module) describe(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var glyph string
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "emoji", &glyph); err != nil {
+		return none, err
+	}
+	if err := m.checkInputSize(glyph); err != nil {
 		return none, err
 	}
 	if d, ok := dataNames[glyph]; ok {
