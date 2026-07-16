@@ -397,6 +397,15 @@ get("xxxxxxxxxx")`,
 name("xxxxxxxxxx")`,
 		"describe": `load("emoji","describe")
 describe("xxxxxxxxxx")`,
+		// convert bounds its value before autoKind scans it.
+		"convert_value": `load("emoji","convert")
+convert("xxxxxxxxxx")`,
+		// the kind selector is bounded too (not echoed into an error).
+		"convert_kind": `load("emoji","convert")
+convert("x", kind="xxxxxxxxxx")`,
+		// letter_to_emoji's style selector is bounded too.
+		"letter_style": `load("emoji","letter_to_emoji")
+letter_to_emoji("A", style="xxxxxxxxxx")`,
 		// a bytes time value is bounded by checkValueSize before parsing.
 		"time_to_emoji_bytes": `load("emoji","time_to_emoji")
 time_to_emoji(b"1234567890")`,
@@ -547,6 +556,17 @@ demojize("hi", delimiters=("X" * 1000, ""))
 			t.Errorf("expected a delimiter-too-large error, got %v", err)
 		}
 	})
+	// A delimiter *list* is length-checked before it is copied, so an oversized
+	// list is rejected up front rather than materialized.
+	t.Run("oversized delimiter list rejected", func(t *testing.T) {
+		_, err := run(t, `
+load("emoji","demojize")
+demojize("hi", delimiters=[""] * 100000)
+`)
+		if err == nil || !strings.Contains(err.Error(), "exactly 2 elements") {
+			t.Errorf("expected a 2-element error, got %v", err)
+		}
+	})
 }
 
 // TestCheckIntSize exercises the integer decimal-length bound directly, so it can
@@ -567,12 +587,14 @@ func TestCheckIntSize(t *testing.T) {
 	}
 	pass(starlark.MakeInt(0), "0")
 	pass(starlark.MakeInt(12), "12")
-	pass(starlark.MakeInt(9999), "9999") // 4 digits, estimate 5 == cap
-	fail(starlark.MakeInt(1234567), "1234567")
-	// A negative number counts its '-' sign: -9999 is "−9999" (5 digits + sign).
-	fail(starlark.MakeInt(-9999), "-9999")
-	// A genuinely huge big.Int (~30M bits ≈ 9M digits) is rejected without ever
-	// materializing its decimal string.
+	pass(starlark.MakeInt(99999), "99999") // exactly 5 bytes == cap
+	fail(starlark.MakeInt(123456), "123456")
+	// A negative number counts its '-' sign, measured exactly for int64 values:
+	// "-9999" is 5 bytes (passes cap 5); "-99999" is 6 bytes (fails).
+	pass(starlark.MakeInt(-9999), "-9999")
+	fail(starlark.MakeInt(-99999), "-99999")
+	// A genuinely huge big.Int (~30M bits ≈ 9M digits) is rejected via the
+	// bit-length estimate without ever materializing its decimal string.
 	huge := starlark.MakeBigInt(new(big.Int).Lsh(big.NewInt(1), 30_000_000))
 	fail(huge, "1<<30000000")
 	// A disabled cap (0) lets any magnitude through.

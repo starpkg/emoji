@@ -102,9 +102,13 @@ can read the cap but can neither widen nor zero it at runtime. This requires
    real gap: they once looked up an unbounded selector/glyph without checking).
    `demojize`'s `open`/`close` delimiters are separately capped at
    `maxDelimiterBytes` (64) because they wrap every shortcode, so a huge one would
-   amplify a small input into an unbounded output. The cap itself is **host-only**
-   (see the Dependency-on-base note): a script cannot re-widen or zero it via a
-   `set_` builtin at runtime.
+   amplify a small input into an unbounded output; its delimiter *list* is
+   length-checked before it is copied. Selector args count too: `convert` bounds
+   `value` **before** `autoKind` scans it and bounds the `kind` string, and
+   `letter_to_emoji` bounds its `style` string — so an over-long selector is
+   rejected rather than echoed wholesale into an error. The cap itself is
+   **host-only** (see the Dependency-on-base note): a script cannot re-widen or
+   zero it via a `set_` builtin at runtime.
 2. **No host panics from script input.** Builtins validate argument types and
    return script-level errors (`UnpackArgs`, the `default:` arms in `numericText`
    / `parseTimeValue` / `textOf`), never `panic`.

@@ -319,6 +319,11 @@ func (m *Module) letterToEmoji(thread *starlark.Thread, b *starlark.Builtin, arg
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "text", &text, "style?", &style); err != nil {
 		return none, err
 	}
+	// Bound the style selector too, so an over-long value is rejected rather than
+	// echoed wholesale into an "unknown letter style" error.
+	if err := m.checkInputSize(style); err != nil {
+		return none, err
+	}
 	s := text.GoString()
 	if err := m.checkInputSize(s); err != nil {
 		return none, err
