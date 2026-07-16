@@ -48,7 +48,10 @@ type Module struct {
 // NewModule creates a new Module with default configuration.
 func NewModule() *Module {
 	cm, _ := base.NewConfigurableModuleWithConfigOptions(
-		genConfigOption(configKeyMaxInputBytes, "Maximum input size in bytes for text conversions", defaultMaxInputBytes),
+		// Host-only: max_input_bytes is the module's only DoS guard, so a script
+		// must not be able to widen or zero it. base emits no set_max_input_bytes
+		// builtin for a host-only option and snapshots the env at construction.
+		genConfigOption(configKeyMaxInputBytes, "Maximum input size in bytes for text conversions", defaultMaxInputBytes).SetHostOnly(true),
 	)
 	return &Module{cfgMod: cm, ext: cm.Extend()}
 }
@@ -100,18 +103,39 @@ func (m *Module) checkInputSize(text string) error {
 	return nil
 }
 
-// checkValueSize bounds a value's input size when it carries text (string or
-// bytes); non-text values (ints, floats) are never large and pass through. This
-// keeps every text-accepting entry point honoring max_input_bytes.
+// checkValueSize bounds a value's input size before conversion. Strings and
+// bytes are checked directly; an integer is checked by its decimal length,
+// because the number path turns each decimal digit into a (multi-byte) keycap
+// emoji — a huge int would otherwise expand without bound (a float's decimal is
+// always short, so it passes through).
 func (m *Module) checkValueSize(v starlark.Value) error {
 	switch x := v.(type) {
 	case starlark.String:
 		return m.checkInputSize(string(x))
 	case starlark.Bytes:
 		return m.checkInputSize(string(x))
+	case starlark.Int:
+		return m.checkIntSize(x)
 	default:
 		return nil
 	}
+}
+
+// checkIntSize rejects an integer whose decimal representation would exceed
+// max_input_bytes, estimated from its bit length so a pathological big.Int is
+// never materialized to a string just to measure it. A B-bit integer has at most
+// B*log10(2)+1 < B*0.302+1 decimal digits; if even that upper bound exceeds the
+// cap the number is rejected. (A multi-megabyte-digit number is absurd, so
+// over-rejecting the last few digits at the boundary is fine.)
+func (m *Module) checkIntSize(x starlark.Int) error {
+	maxBytes := m.ext.GetInt(configKeyMaxInputBytes)
+	if maxBytes <= 0 {
+		return nil
+	}
+	if int64(x.BigInt().BitLen())*302/1000+1 > int64(maxBytes) {
+		return fmt.Errorf("%s: number is too large (decimal length exceeds max_input_bytes %d)", ModuleName, maxBytes)
+	}
+	return nil
 }
 
 // --- shortcode <-> emoji -----------------------------------------------------

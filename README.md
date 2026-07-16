@@ -105,11 +105,12 @@ errors, and examples of every builtin above.
 ## Configuration
 
 The module's single option, `max_input_bytes`, bounds the input size of text
-conversions. It is configured via the `EMOJI_MAX_INPUT_BYTES` environment
-variable or the generated `get_max_input_bytes` / `set_max_input_bytes` accessor
-builtins. See the
+conversions. It is **host-only** — configured via the `EMOJI_MAX_INPUT_BYTES`
+environment variable (or from Go), never from a script. Scripts get a read-only
+`get_max_input_bytes` accessor but no `set_max_input_bytes`, so an untrusted
+script cannot widen or disable the cap. See the
 [Configuration section of docs/API.md](docs/API.md#configuration) for the full
-option table, default, and accessors.
+option table, default, and accessor.
 
 ## Data
 

@@ -491,15 +491,37 @@ out = letter_to_emoji("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 			t.Error("expected non-empty output with cap disabled")
 		}
 	})
-	// The cap can also be lowered from Starlark via the base-provided setter.
-	t.Run("setter lowers cap", func(t *testing.T) {
+	// The cap is host-configured (env) and lowering it rejects long input.
+	t.Run("host lowers cap via env", func(t *testing.T) {
+		t.Setenv("EMOJI_MAX_INPUT_BYTES", "3")
 		_, err := run(t, `
-load("emoji","set_max_input_bytes","emojize")
-set_max_input_bytes(3)
+load("emoji","emojize")
 emojize("this is long :smile:")
 `)
 		if err == nil || !strings.Contains(err.Error(), "max_input_bytes") {
-			t.Errorf("expected max_input_bytes error after set_max_input_bytes(3), got %v", err)
+			t.Errorf("expected max_input_bytes error under a tiny cap, got %v", err)
+		}
+	})
+	// max_input_bytes is host-only: base emits get_max_input_bytes but NO
+	// set_max_input_bytes, so a script cannot raise or zero the DoS guard.
+	t.Run("cap is host-only", func(t *testing.T) {
+		if _, err := run(t, `load("emoji","set_max_input_bytes")`); err == nil {
+			t.Error("set_max_input_bytes is loadable — a script can widen the cap")
+		}
+		if _, err := run(t, `load("emoji","get_max_input_bytes")`); err != nil {
+			t.Errorf("get_max_input_bytes should be loadable: %v", err)
+		}
+	})
+	// A huge integer is rejected by its decimal length before the number path
+	// expands each digit into a multi-byte keycap emoji.
+	t.Run("huge int rejected", func(t *testing.T) {
+		// 1 << 30000000 is a ~30M-bit int (~9M decimal digits), past the 5 MiB cap.
+		_, err := run(t, `
+load("emoji","number_to_emoji")
+number_to_emoji(1 << 30000000)
+`)
+		if err == nil || !strings.Contains(err.Error(), "too large") {
+			t.Errorf("expected a too-large error for a huge int, got %v", err)
 		}
 	})
 }
