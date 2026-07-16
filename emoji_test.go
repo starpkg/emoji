@@ -400,12 +400,6 @@ describe("xxxxxxxxxx")`,
 		// convert bounds its value before autoKind scans it.
 		"convert_value": `load("emoji","convert")
 convert("xxxxxxxxxx")`,
-		// the kind selector is bounded too (not echoed into an error).
-		"convert_kind": `load("emoji","convert")
-convert("x", kind="xxxxxxxxxx")`,
-		// letter_to_emoji's style selector is bounded too.
-		"letter_style": `load("emoji","letter_to_emoji")
-letter_to_emoji("A", style="xxxxxxxxxx")`,
 		// a bytes time value is bounded by checkValueSize before parsing.
 		"time_to_emoji_bytes": `load("emoji","time_to_emoji")
 time_to_emoji(b"1234567890")`,
@@ -418,6 +412,47 @@ time_to_emoji(b"1234567890")`,
 			}
 		})
 	}
+}
+
+// The kind/style enum selectors are bounded by a small fixed cap (not
+// max_input_bytes), so an absurd selector is rejected while the built-in default
+// values still work even under a tiny max_input_bytes.
+func TestSelectorBounds(t *testing.T) {
+	// An over-long selector is rejected.
+	t.Run("over-long kind", func(t *testing.T) {
+		_, err := run(t, "load(\"emoji\",\"convert\")\nconvert(\"x\", kind=\"k\" * 100)")
+		if err == nil || !strings.Contains(err.Error(), "kind exceeds") {
+			t.Errorf("expected a kind-too-long error, got %v", err)
+		}
+	})
+	t.Run("over-long style", func(t *testing.T) {
+		_, err := run(t, "load(\"emoji\",\"letter_to_emoji\")\nletter_to_emoji(\"A\", style=\"s\" * 100)")
+		if err == nil || !strings.Contains(err.Error(), "style exceeds") {
+			t.Errorf("expected a style-too-long error, got %v", err)
+		}
+	})
+	// A tiny cap must not reject the internal default selectors ("auto",
+	// "regional") — the value itself is within the cap.
+	t.Run("default kind survives tiny cap", func(t *testing.T) {
+		t.Setenv("EMOJI_MAX_INPUT_BYTES", "3")
+		res := mustRun(t, `
+load("emoji","convert")
+out = convert("A")
+`)
+		if got := res["out"].(string); got != "A" {
+			t.Errorf("convert(\"A\") under cap 3 = %q, want \"A\"", got)
+		}
+	})
+	t.Run("default style survives tiny cap", func(t *testing.T) {
+		t.Setenv("EMOJI_MAX_INPUT_BYTES", "7")
+		res := mustRun(t, `
+load("emoji","letter_to_emoji")
+out = letter_to_emoji("A")
+`)
+		if got := res["out"].(string); got != "\U0001F1E6" {
+			t.Errorf("letter_to_emoji(\"A\") under cap 7 = %q, want regional A", got)
+		}
+	})
 }
 
 func TestNumberFloatAndListDelimiters(t *testing.T) {
@@ -593,6 +628,20 @@ func TestCheckIntSize(t *testing.T) {
 	// "-9999" is 5 bytes (passes cap 5); "-99999" is 6 bytes (fails).
 	pass(starlark.MakeInt(-9999), "-9999")
 	fail(starlark.MakeInt(-99999), "-99999")
+	// A value just above int64 max is still measured exactly (via uint64), so it
+	// is not over-rejected: 2^63 = 9223372036854775808 is exactly 19 bytes.
+	twoPow63 := starlark.MakeBigInt(new(big.Int).Lsh(big.NewInt(1), 63))
+	t.Run("uint64 boundary is exact", func(t *testing.T) {
+		t.Setenv("EMOJI_MAX_INPUT_BYTES", "19")
+		m19 := NewModule()
+		if err := m19.checkIntSize(twoPow63); err != nil {
+			t.Errorf("2^63 (19 digits) should pass a 19-byte cap: %v", err)
+		}
+		t.Setenv("EMOJI_MAX_INPUT_BYTES", "18")
+		if err := NewModule().checkIntSize(twoPow63); err == nil {
+			t.Error("2^63 (19 digits) should fail an 18-byte cap")
+		}
+	})
 	// A genuinely huge big.Int (~30M bits ≈ 9M digits) is rejected via the
 	// bit-length estimate without ever materializing its decimal string.
 	huge := starlark.MakeBigInt(new(big.Int).Lsh(big.NewInt(1), 30_000_000))

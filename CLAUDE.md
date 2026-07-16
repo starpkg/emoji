@@ -104,9 +104,13 @@ can read the cap but can neither widen nor zero it at runtime. This requires
    `maxDelimiterBytes` (64) because they wrap every shortcode, so a huge one would
    amplify a small input into an unbounded output; its delimiter *list* is
    length-checked before it is copied. Selector args count too: `convert` bounds
-   `value` **before** `autoKind` scans it and bounds the `kind` string, and
-   `letter_to_emoji` bounds its `style` string — so an over-long selector is
-   rejected rather than echoed wholesale into an error. The cap itself is
+   `value` **before** `autoKind` scans it, and the small enum selectors
+   (`convert`'s `kind`, `letter_to_emoji`'s `style`) are bounded by a **fixed**
+   `maxSelectorBytes` (64) rather than `max_input_bytes` — so an over-long selector
+   is rejected instead of echoed into an error, yet the built-in defaults
+   (`"auto"`, `"regional"`) always pass even under a tiny cap. `checkIntSize`
+   measures int64/uint64-range values exactly (only larger big.Ints use the
+   bit-length estimate) so no in-range number is over-rejected. The cap itself is
    **host-only** (see the Dependency-on-base note): a script cannot re-widen or
    zero it via a `set_` builtin at runtime.
 2. **No host panics from script input.** Builtins validate argument types and

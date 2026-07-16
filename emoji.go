@@ -123,31 +123,38 @@ func (m *Module) checkValueSize(v starlark.Value) error {
 }
 
 // checkIntSize rejects an integer whose decimal representation would exceed
-// max_input_bytes. A value that fits int64 (the common case) is measured
-// exactly, so no in-range number is ever over-rejected at the boundary. A larger
-// big.Int is bounded by its bit length instead — a B-bit integer has at most
-// B*log10(2)+1 < B*0.302+1 decimal digits (+1 for a '-' sign) — so a pathological
-// value is never materialized to a string just to measure it.
+// max_input_bytes, using intDecimalLen so a pathological big.Int is never
+// materialized just to measure it.
 func (m *Module) checkIntSize(x starlark.Int) error {
 	maxBytes := m.ext.GetInt(configKeyMaxInputBytes)
 	if maxBytes <= 0 {
 		return nil
 	}
+	if intDecimalLen(x) > int64(maxBytes) {
+		return fmt.Errorf("%s: number is too large (decimal length exceeds max_input_bytes %d)", ModuleName, maxBytes)
+	}
+	return nil
+}
+
+// intDecimalLen returns the number of bytes in x's decimal representation. Any
+// value fitting int64 or uint64 (the common case) is measured exactly, so no
+// in-range number is ever over-rejected at the boundary. A larger big.Int is
+// bounded by its bit length instead — a B-bit integer has at most B*log10(2)+1 <
+// B*0.302+1 decimal digits (+1 for a '-' sign) — computed in int64 so the
+// estimate can't overflow on a 32-bit platform.
+func intDecimalLen(x starlark.Int) int64 {
 	if n, ok := x.Int64(); ok {
-		if len(strconv.FormatInt(n, 10)) > maxBytes {
-			return fmt.Errorf("%s: number is too large (decimal length exceeds max_input_bytes %d)", ModuleName, maxBytes)
-		}
-		return nil
+		return int64(len(strconv.FormatInt(n, 10)))
+	}
+	if n, ok := x.Uint64(); ok {
+		return int64(len(strconv.FormatUint(n, 10)))
 	}
 	bi := x.BigInt()
 	digits := int64(bi.BitLen())*302/1000 + 1
 	if bi.Sign() < 0 {
 		digits++
 	}
-	if digits > int64(maxBytes) {
-		return fmt.Errorf("%s: number is too large (decimal length exceeds max_input_bytes %d)", ModuleName, maxBytes)
-	}
-	return nil
+	return digits
 }
 
 // --- shortcode <-> emoji -----------------------------------------------------
@@ -268,6 +275,13 @@ func (m *Module) demojize(thread *starlark.Thread, b *starlark.Builtin, args sta
 // delimiter yet keeps the per-shortcode expansion a small constant.
 const maxDelimiterBytes = 64
 
+// maxSelectorBytes bounds a short enum selector (convert's kind,
+// letter_to_emoji's style). Valid values are a handful of bytes, so this rejects
+// an absurdly long selector — keeping it out of an error message — without ever
+// rejecting the built-in defaults ("auto", "regional") regardless of how small
+// max_input_bytes is set.
+const maxSelectorBytes = 64
+
 // parseDelimiters reads an optional (open, close) pair of strings; the default
 // is (":", ":").
 func parseDelimiters(v starlark.Value) (string, string, error) {
@@ -362,13 +376,13 @@ func (m *Module) convert(thread *starlark.Thread, b *starlark.Builtin, args star
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "value", &value, "kind?", &kind); err != nil {
 		return none, err
 	}
-	// Bound every text input up front — the value AND the kind selector — before
-	// any work touches them. autoKind scans the whole string, so the value check
-	// must precede it; an over-long kind is rejected rather than echoed wholesale
-	// into an "unknown kind" error. This keeps the max_input_bytes invariant
-	// uniform across the dispatcher.
-	if err := m.checkInputSize(kind); err != nil {
-		return none, err
+	// Bound the value up front — autoKind scans the whole string, so the value
+	// check must precede it. The kind selector is a tiny enum bounded by a small
+	// fixed cap (not max_input_bytes) so an absurdly long value isn't echoed into
+	// an "unknown kind" error, while the built-in defaults always pass even under
+	// a tiny max_input_bytes.
+	if len(kind) > maxSelectorBytes {
+		return none, fmt.Errorf("%s: kind exceeds %d bytes", b.Name(), maxSelectorBytes)
 	}
 	if err := m.checkValueSize(value); err != nil {
 		return none, err

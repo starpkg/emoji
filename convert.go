@@ -319,10 +319,11 @@ func (m *Module) letterToEmoji(thread *starlark.Thread, b *starlark.Builtin, arg
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "text", &text, "style?", &style); err != nil {
 		return none, err
 	}
-	// Bound the style selector too, so an over-long value is rejected rather than
-	// echoed wholesale into an "unknown letter style" error.
-	if err := m.checkInputSize(style); err != nil {
-		return none, err
+	// Bound the style selector by a small fixed cap so an over-long value isn't
+	// echoed into an "unknown letter style" error — without rejecting the default
+	// "regional" under a tiny max_input_bytes.
+	if len(style) > maxSelectorBytes {
+		return none, fmt.Errorf("%s: style exceeds %d bytes", b.Name(), maxSelectorBytes)
 	}
 	s := text.GoString()
 	if err := m.checkInputSize(s); err != nil {
