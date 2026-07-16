@@ -123,38 +123,46 @@ func (m *Module) checkValueSize(v starlark.Value) error {
 }
 
 // checkIntSize rejects an integer whose decimal representation would exceed
-// max_input_bytes, using intDecimalLen so a pathological big.Int is never
-// materialized just to measure it.
+// max_input_bytes. Values fitting int64/uint64 (the common case) are measured
+// exactly. A larger big.Int is bounded by its bit length — a B-bit integer has
+// at most B*log10(2)+1 < B*0.302+1 decimal digits (+1 for a '-' sign), computed
+// in int64 so it can't overflow on a 32-bit platform. When that estimate lands
+// just above the cap the exact length is materialized (bounded to ~2×maxBytes, a
+// transient the cap already implies) so no in-range number is over-rejected; a
+// value whose estimate is more than twice the cap is unambiguously too large and
+// is rejected without materializing.
 func (m *Module) checkIntSize(x starlark.Int) error {
-	maxBytes := m.ext.GetInt(configKeyMaxInputBytes)
+	maxBytes := int64(m.ext.GetInt(configKeyMaxInputBytes))
 	if maxBytes <= 0 {
 		return nil
 	}
-	if intDecimalLen(x) > int64(maxBytes) {
+	if n, ok := x.Int64(); ok {
+		return intSizeErr(int64(len(strconv.FormatInt(n, 10))), maxBytes)
+	}
+	if n, ok := x.Uint64(); ok {
+		return intSizeErr(int64(len(strconv.FormatUint(n, 10))), maxBytes)
+	}
+	bi := x.BigInt()
+	est := int64(bi.BitLen())*302/1000 + 1
+	if bi.Sign() < 0 {
+		est++
+	}
+	switch {
+	case est <= maxBytes:
+		return nil
+	case est > 2*maxBytes:
+		return intSizeErr(est, maxBytes)
+	default:
+		return intSizeErr(int64(len(bi.Text(10))), maxBytes)
+	}
+}
+
+// intSizeErr reports a too-large error when length exceeds maxBytes.
+func intSizeErr(length, maxBytes int64) error {
+	if length > maxBytes {
 		return fmt.Errorf("%s: number is too large (decimal length exceeds max_input_bytes %d)", ModuleName, maxBytes)
 	}
 	return nil
-}
-
-// intDecimalLen returns the number of bytes in x's decimal representation. Any
-// value fitting int64 or uint64 (the common case) is measured exactly, so no
-// in-range number is ever over-rejected at the boundary. A larger big.Int is
-// bounded by its bit length instead — a B-bit integer has at most B*log10(2)+1 <
-// B*0.302+1 decimal digits (+1 for a '-' sign) — computed in int64 so the
-// estimate can't overflow on a 32-bit platform.
-func intDecimalLen(x starlark.Int) int64 {
-	if n, ok := x.Int64(); ok {
-		return int64(len(strconv.FormatInt(n, 10)))
-	}
-	if n, ok := x.Uint64(); ok {
-		return int64(len(strconv.FormatUint(n, 10)))
-	}
-	bi := x.BigInt()
-	digits := int64(bi.BitLen())*302/1000 + 1
-	if bi.Sign() < 0 {
-		digits++
-	}
-	return digits
 }
 
 // --- shortcode <-> emoji -----------------------------------------------------

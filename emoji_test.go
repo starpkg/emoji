@@ -642,6 +642,25 @@ func TestCheckIntSize(t *testing.T) {
 			t.Error("2^63 (19 digits) should fail an 18-byte cap")
 		}
 	})
+	// Beyond uint64, a boundary value is still exact (materialized only when the
+	// estimate lands just above the cap): -(2^63+1) = "-9223372036854775809" is
+	// 20 bytes, and 2^66 = 73786976294838206464 is 20 bytes.
+	t.Run("beyond-uint64 boundary is exact", func(t *testing.T) {
+		negBig := starlark.MakeBigInt(new(big.Int).Neg(new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), 63), big.NewInt(1))))
+		twoPow66 := starlark.MakeBigInt(new(big.Int).Lsh(big.NewInt(1), 66))
+		t.Setenv("EMOJI_MAX_INPUT_BYTES", "20")
+		m20 := NewModule()
+		if err := m20.checkIntSize(negBig); err != nil {
+			t.Errorf("-(2^63+1) (20 bytes) should pass a 20-byte cap: %v", err)
+		}
+		if err := m20.checkIntSize(twoPow66); err != nil {
+			t.Errorf("2^66 (20 bytes) should pass a 20-byte cap: %v", err)
+		}
+		t.Setenv("EMOJI_MAX_INPUT_BYTES", "19")
+		if err := NewModule().checkIntSize(twoPow66); err == nil {
+			t.Error("2^66 (20 bytes) should fail a 19-byte cap")
+		}
+	})
 	// A genuinely huge big.Int (~30M bits ≈ 9M digits) is rejected via the
 	// bit-length estimate without ever materializing its decimal string.
 	huge := starlark.MakeBigInt(new(big.Int).Lsh(big.NewInt(1), 30_000_000))

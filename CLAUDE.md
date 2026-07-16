@@ -109,8 +109,10 @@ can read the cap but can neither widen nor zero it at runtime. This requires
    `maxSelectorBytes` (64) rather than `max_input_bytes` — so an over-long selector
    is rejected instead of echoed into an error, yet the built-in defaults
    (`"auto"`, `"regional"`) always pass even under a tiny cap. `checkIntSize`
-   measures int64/uint64-range values exactly (only larger big.Ints use the
-   bit-length estimate) so no in-range number is over-rejected. The cap itself is
+   measures int64/uint64 values exactly, and for a larger big.Int uses a
+   bit-length estimate — materializing the exact decimal only when the estimate
+   lands just above the cap (a transient bounded to ~2×max_input_bytes) — so no
+   in-range number is ever over-rejected. The cap itself is
    **host-only** (see the Dependency-on-base note): a script cannot re-widen or
    zero it via a `set_` builtin at runtime.
 2. **No host panics from script input.** Builtins validate argument types and
