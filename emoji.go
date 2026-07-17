@@ -21,6 +21,7 @@ package emoji
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -48,7 +49,10 @@ type Module struct {
 // NewModule creates a new Module with default configuration.
 func NewModule() *Module {
 	cm, _ := base.NewConfigurableModuleWithConfigOptions(
-		genConfigOption(configKeyMaxInputBytes, "Maximum input size in bytes for text conversions", defaultMaxInputBytes),
+		// Host-only: max_input_bytes is the module's only DoS guard, so a script
+		// must not be able to widen or zero it. base emits no set_max_input_bytes
+		// builtin for a host-only option and snapshots the env at construction.
+		genConfigOption(configKeyMaxInputBytes, "Maximum input size in bytes for text conversions", defaultMaxInputBytes).SetHostOnly(true),
 	)
 	return &Module{cfgMod: cm, ext: cm.Extend()}
 }
@@ -100,18 +104,65 @@ func (m *Module) checkInputSize(text string) error {
 	return nil
 }
 
-// checkValueSize bounds a value's input size when it carries text (string or
-// bytes); non-text values (ints, floats) are never large and pass through. This
-// keeps every text-accepting entry point honoring max_input_bytes.
+// checkValueSize bounds a value's input size before conversion. Strings and
+// bytes are checked directly; an integer is checked by its decimal length,
+// because the number path turns each decimal digit into a (multi-byte) keycap
+// emoji — a huge int would otherwise expand without bound (a float's decimal is
+// always short, so it passes through).
 func (m *Module) checkValueSize(v starlark.Value) error {
 	switch x := v.(type) {
 	case starlark.String:
 		return m.checkInputSize(string(x))
 	case starlark.Bytes:
 		return m.checkInputSize(string(x))
+	case starlark.Int:
+		return m.checkIntSize(x)
 	default:
 		return nil
 	}
+}
+
+// checkIntSize rejects an integer whose decimal representation would exceed
+// max_input_bytes. Values fitting int64/uint64 (the common case) are measured
+// exactly. A larger big.Int is bounded by its bit length — a B-bit integer has
+// at most B*log10(2)+1 < B*0.302+1 decimal digits (+1 for a '-' sign), computed
+// in int64 so it can't overflow on a 32-bit platform. When that estimate lands
+// just above the cap the exact length is materialized (bounded to ~2×maxBytes, a
+// transient the cap already implies) so no in-range number is over-rejected; a
+// value whose estimate is more than twice the cap is unambiguously too large and
+// is rejected without materializing.
+func (m *Module) checkIntSize(x starlark.Int) error {
+	maxBytes := int64(m.ext.GetInt(configKeyMaxInputBytes))
+	if maxBytes <= 0 {
+		return nil
+	}
+	if n, ok := x.Int64(); ok {
+		return intSizeErr(int64(len(strconv.FormatInt(n, 10))), maxBytes)
+	}
+	if n, ok := x.Uint64(); ok {
+		return intSizeErr(int64(len(strconv.FormatUint(n, 10))), maxBytes)
+	}
+	bi := x.BigInt()
+	est := int64(bi.BitLen())*302/1000 + 1
+	if bi.Sign() < 0 {
+		est++
+	}
+	switch {
+	case est <= maxBytes:
+		return nil
+	case est > 2*maxBytes:
+		return intSizeErr(est, maxBytes)
+	default:
+		return intSizeErr(int64(len(bi.Text(10))), maxBytes)
+	}
+}
+
+// intSizeErr reports a too-large error when length exceeds maxBytes.
+func intSizeErr(length, maxBytes int64) error {
+	if length > maxBytes {
+		return fmt.Errorf("%s: number is too large (decimal length exceeds max_input_bytes %d)", ModuleName, maxBytes)
+	}
+	return nil
 }
 
 // --- shortcode <-> emoji -----------------------------------------------------
@@ -214,12 +265,30 @@ func (m *Module) demojize(thread *starlark.Thread, b *starlark.Builtin, args sta
 	if err != nil {
 		return none, fmt.Errorf("%s: %w", b.Name(), err)
 	}
+	// Delimiters are wrapped around every shortcode, so a large one amplifies a
+	// small input into an unbounded output; cap them at a small constant.
+	if len(open) > maxDelimiterBytes || len(closing) > maxDelimiterBytes {
+		return none, fmt.Errorf("%s: delimiter exceeds %d bytes", b.Name(), maxDelimiterBytes)
+	}
 	s := text.GoString()
 	if err := m.checkInputSize(s); err != nil {
 		return none, err
 	}
 	return starlark.String(demojizeText(s, open, closing)), nil
 }
+
+// maxDelimiterBytes bounds demojize's open/close delimiters. They are short
+// markers (e.g. ":"); a large one would be repeated around every shortcode,
+// amplifying a small input into an unbounded output. 64 is far beyond any real
+// delimiter yet keeps the per-shortcode expansion a small constant.
+const maxDelimiterBytes = 64
+
+// maxSelectorBytes bounds a short enum selector (convert's kind,
+// letter_to_emoji's style). Valid values are a handful of bytes, so this rejects
+// an absurdly long selector — keeping it out of an error message — without ever
+// rejecting the built-in defaults ("auto", "regional") regardless of how small
+// max_input_bytes is set.
+const maxSelectorBytes = 64
 
 // parseDelimiters reads an optional (open, close) pair of strings; the default
 // is (":", ":").
@@ -232,13 +301,20 @@ func parseDelimiters(v starlark.Value) (string, string, error) {
 	case starlark.Tuple:
 		items = []starlark.Value(x)
 	case *starlark.List:
-		items = make([]starlark.Value, 0, x.Len())
-		for i := 0; i < x.Len(); i++ {
-			items = append(items, x.Index(i))
+		// Check the length before copying, so a huge list can't be materialized
+		// just to be rejected.
+		if x.Len() != 2 {
+			return "", "", fmt.Errorf("delimiters must have exactly 2 elements, got %d", x.Len())
 		}
+		items = []starlark.Value{x.Index(0), x.Index(1)}
 	default:
 		return "", "", fmt.Errorf("delimiters must be a (open, close) tuple, got %s", v.Type())
 	}
+	return delimiterStrings(items)
+}
+
+// delimiterStrings validates a materialized (open, close) pair.
+func delimiterStrings(items []starlark.Value) (string, string, error) {
 	if len(items) != 2 {
 		return "", "", fmt.Errorf("delimiters must have exactly 2 elements, got %d", len(items))
 	}
@@ -253,6 +329,9 @@ func parseDelimiters(v starlark.Value) (string, string, error) {
 func (m *Module) get(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var nameArg string
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "name", &nameArg); err != nil {
+		return none, err
+	}
+	if err := m.checkInputSize(nameArg); err != nil {
 		return none, err
 	}
 	bare := strings.Trim(nameArg, ":")
@@ -270,6 +349,9 @@ func (m *Module) name(thread *starlark.Thread, b *starlark.Builtin, args starlar
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "emoji", &glyph); err != nil {
 		return none, err
 	}
+	if err := m.checkInputSize(glyph); err != nil {
+		return none, err
+	}
 	if n, ok := dataReverse[glyph]; ok {
 		return starlark.String(n), nil
 	}
@@ -279,6 +361,9 @@ func (m *Module) name(thread *starlark.Thread, b *starlark.Builtin, args starlar
 func (m *Module) describe(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var glyph string
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "emoji", &glyph); err != nil {
+		return none, err
+	}
+	if err := m.checkInputSize(glyph); err != nil {
 		return none, err
 	}
 	if d, ok := dataNames[glyph]; ok {
@@ -299,15 +384,25 @@ func (m *Module) convert(thread *starlark.Thread, b *starlark.Builtin, args star
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "value", &value, "kind?", &kind); err != nil {
 		return none, err
 	}
-	if kind == "auto" {
-		kind = autoKind(value)
+	// Bound the value up front — autoKind scans the whole string, so the value
+	// check must precede it. The kind selector is a tiny enum bounded by a small
+	// fixed cap (not max_input_bytes) so an absurdly long value isn't echoed into
+	// an "unknown kind" error, while the built-in defaults always pass even under
+	// a tiny max_input_bytes.
+	if len(kind) > maxSelectorBytes {
+		return none, fmt.Errorf("%s: kind exceeds %d bytes", b.Name(), maxSelectorBytes)
 	}
-	// Bound any text input up front; this covers every kind that consumes a
-	// string (number/time strings included), keeping the max_input_bytes
-	// invariant uniform across the dispatcher.
 	if err := m.checkValueSize(value); err != nil {
 		return none, err
 	}
+	if kind == "auto" {
+		kind = autoKind(value)
+	}
+	return m.dispatchConvert(b, kind, value)
+}
+
+// dispatchConvert routes an already-bounded value to the conversion for kind.
+func (m *Module) dispatchConvert(b *starlark.Builtin, kind string, value starlark.Value) (starlark.Value, error) {
 	switch kind {
 	case "number":
 		text, err := numericText(value)
@@ -326,26 +421,32 @@ func (m *Module) convert(thread *starlark.Thread, b *starlark.Builtin, args star
 		}
 		return starlark.String(out), nil
 	case "letter", "symbol", "emojize", "demojize":
-		s, err := textOf(value)
+		return m.convertText(b, kind, value)
+	default:
+		return none, fmt.Errorf("%s: unknown kind %q (want auto, emojize, demojize, number, time, letter, symbol)", b.Name(), kind)
+	}
+}
+
+// convertText handles the string-consuming convert kinds (letter/symbol/emojize/
+// demojize) after the dispatcher has bounded the value.
+func (m *Module) convertText(b *starlark.Builtin, kind string, value starlark.Value) (starlark.Value, error) {
+	s, err := textOf(value)
+	if err != nil {
+		return none, fmt.Errorf("%s: %w", b.Name(), err)
+	}
+	switch kind {
+	case "letter":
+		out, err := letterToEmojiStr(s, "regional")
 		if err != nil {
 			return none, fmt.Errorf("%s: %w", b.Name(), err)
 		}
-		switch kind {
-		case "letter":
-			out, err := letterToEmojiStr(s, "regional")
-			if err != nil {
-				return none, fmt.Errorf("%s: %w", b.Name(), err)
-			}
-			return starlark.String(out), nil
-		case "symbol":
-			return starlark.String(symbolToEmojiStr(s)), nil
-		case "demojize":
-			return starlark.String(demojizeText(s, ":", ":")), nil
-		default: // emojize
-			return starlark.String(emojizeText(s)), nil
-		}
-	default:
-		return none, fmt.Errorf("%s: unknown kind %q (want auto, emojize, demojize, number, time, letter, symbol)", b.Name(), kind)
+		return starlark.String(out), nil
+	case "symbol":
+		return starlark.String(symbolToEmojiStr(s)), nil
+	case "demojize":
+		return starlark.String(demojizeText(s, ":", ":")), nil
+	default: // emojize
+		return starlark.String(emojizeText(s)), nil
 	}
 }
 

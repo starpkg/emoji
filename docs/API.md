@@ -7,10 +7,11 @@ quickstart, see the [README](../README.md).
 The module exposes twelve top-level builtins via `load("emoji", …)`. They split
 into a **shortcode** group (backed by a generated data table) and a
 **look-alike** group (pure Unicode arithmetic), with a `convert` dispatcher and
-an `info` metadata builtin. A pair of configuration accessors
-(`get_max_input_bytes` / `set_max_input_bytes`) is generated from the module's
-single option. All builtins are pure and deterministic; every text-accepting
-builtin bounds its input by `max_input_bytes` (see [Configuration](#configuration)).
+an `info` metadata builtin. A read-only accessor `get_max_input_bytes` is
+generated from the module's single (host-only) option — there is no
+`set_max_input_bytes`, so a script cannot widen the cap. All builtins are pure and
+deterministic; every text-accepting builtin bounds its input by `max_input_bytes`
+(see [Configuration](#configuration)).
 
 ## Contents
 
@@ -56,7 +57,9 @@ The inverse of `emojize`: replaces every emoji glyph in `text` with its
 
 - `text` (string or bytes): The input to scan for emoji glyphs.
 - `delimiters` (tuple or list, optional): An `(open, close)` pair of strings
-  wrapping each replaced shortcode. Defaults to `(":", ":")`.
+  wrapping each replaced shortcode. Defaults to `(":", ":")`. Each delimiter is
+  bounded at 64 bytes — they wrap every shortcode, so a huge delimiter would
+  amplify a small input into an unbounded output.
 
 **Returns:** The result string with emoji glyphs replaced by delimited
 shortcodes.
@@ -65,7 +68,7 @@ shortcodes.
 selectors, ZWJ joins) win over their shorter prefixes.
 
 **Errors:** Raises a script error if `delimiters` is not a 2-element pair of
-strings, or if `text` exceeds `max_input_bytes`.
+strings, if a delimiter exceeds 64 bytes, or if `text` exceeds `max_input_bytes`.
 
 **Example:**
 
@@ -325,37 +328,32 @@ info()["shortcode_count"] # e.g. 4000+
 
 ## Configuration
 
-The module exposes its single option to scripts as a pair of generated accessor
-builtins (loaded from the `emoji` module alongside the functions above):
+`max_input_bytes` is the module's DoS guard, so it is **host-only**: a script can
+read it but cannot change it. It exposes a read-only `get_max_input_bytes()`
+builtin but **no `set_max_input_bytes`** — `base` does not generate a setter for a
+host-only option, and snapshots its environment value at construction so it can't
+be re-widened at runtime. Configure it host-side via `EMOJI_MAX_INPUT_BYTES`.
 
-- **`get_<key>()`** — returns the current value of the option.
-- **`set_<key>(value)`** — sets the option (returns `None`).
-
-An option's value resolves in priority order: an explicit `set_<key>` value, the
-environment variable, then the default.
-
-None of the `emoji` options are secret, so the option exposes **both**
-`get_max_input_bytes` and `set_max_input_bytes`. (A secret option would expose
-only its `set_<key>` accessor — never a getter — but this module has none.)
+An option's value resolves in priority order: the (snapshotted) environment
+variable, then the default.
 
 | Option | Getter | Setter | Type | Env var | Default | Description |
 |--------|--------|--------|------|---------|---------|-------------|
-| `max_input_bytes` | `get_max_input_bytes` | `set_max_input_bytes` | int | `EMOJI_MAX_INPUT_BYTES` | `5242880` | Maximum input size in bytes for text conversions (5 MiB); `0` disables the cap. |
+| `max_input_bytes` | `get_max_input_bytes` | _(host-only, none)_ | int | `EMOJI_MAX_INPUT_BYTES` | `5242880` | Maximum input size in bytes for text conversions (5 MiB); `0` disables the cap. Host-only — no script setter. |
 
-Text conversions bound their input before processing it, so a hostile or buggy
-script cannot force an unbounded allocation. The option can be set three ways:
+Because it is host-only, the setter `set_max_input_bytes` is **not generated** — a
+script cannot call it. Text conversions (including a huge integer, bounded by its
+decimal length) bound their input before processing it, so a hostile or buggy
+script cannot force an unbounded allocation. The cap is set two ways:
 
 - **Environment** — set `EMOJI_MAX_INPUT_BYTES` before the module is loaded.
-- **From Starlark** — `set_max_input_bytes(value)` updates the cap and
-  `get_max_input_bytes()` returns the current value.
 - **From Go** — construct with `NewModule()` (default) and configure via `base`.
 
 **Example:**
 
 ```python
-load("emoji", "set_max_input_bytes", "get_max_input_bytes", "emojize")
+load("emoji", "get_max_input_bytes", "emojize")
 
-set_max_input_bytes(1024)        # cap input at 1 KiB
-get_max_input_bytes()            # 1024
+get_max_input_bytes()            # 5242880 (read-only; set EMOJI_MAX_INPUT_BYTES host-side)
 emojize(":rocket:")              # 🚀  (well under the cap)
 ```

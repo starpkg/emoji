@@ -79,18 +79,42 @@ are exposed as plain builtins — there are no stateful objects.
   texts, `fetch.sh` (pull pinned sources), and `SOURCES.md` (provenance).
 
 Dependency-on-base note: `base.ConfigurableModule.LoadModule` auto-exposes a
-`set_<key>` / `get_<key>` builtin pair for every config option, so
-`set_max_input_bytes` and `get_max_input_bytes` are real script builtins even
-though they are registered inside `base`, not in this repo's source.
+`get_<key>` accessor for every config option, and a `set_<key>` setter **only for
+options that are not host-only**. `max_input_bytes` is the module's sole DoS
+guard, so it is declared **host-only** (`SetHostOnly(true)` in `NewModule`): base
+generates `get_max_input_bytes` but **not** `set_max_input_bytes`, and
+`FreezeHostOnlyEnv` snapshots its env value at construction — an untrusted script
+can read the cap but can neither widen nor zero it at runtime. This requires
+`base ≥ v0.1.3` (which pulls `starlet ≥ v0.2.3`).
 
 ## Invariants / hardening (preserve when editing)
 
-1. **Bounded input.** Every text-accepting builtin runs `checkInputSize` /
-   `checkValueSize` before processing, so input over `max_input_bytes` is
-   rejected instead of allocating without bound. The `number`/`time` paths must
-   honor the cap too — they once bypassed it while `letter`/`symbol` enforced it
-   (a real regression, see `TestMaxInputBytes`). New text entry points must route
-   through these checks.
+1. **Bounded input, un-widenable cap.** Every text-accepting builtin runs
+   `checkInputSize` / `checkValueSize` before processing, so input over
+   `max_input_bytes` is rejected instead of allocating without bound. The
+   `number`/`time` paths must honor the cap too — they once bypassed it while
+   `letter`/`symbol` enforced it (a real regression, see `TestMaxInputBytes`).
+   `checkValueSize` bounds `Int` arguments by their **decimal length**
+   (`checkIntSize`, ≈ `BitLen * 0.302`) so a huge integer is rejected *before* its
+   unbounded decimal string is materialized — the default arm must never silently
+   pass an `Int` through. New text entry points must route through these checks —
+   **all** text-accepting builtins do, including `get`/`name`/`describe` (a
+   real gap: they once looked up an unbounded selector/glyph without checking).
+   `demojize`'s `open`/`close` delimiters are separately capped at
+   `maxDelimiterBytes` (64) because they wrap every shortcode, so a huge one would
+   amplify a small input into an unbounded output; its delimiter *list* is
+   length-checked before it is copied. Selector args count too: `convert` bounds
+   `value` **before** `autoKind` scans it, and the small enum selectors
+   (`convert`'s `kind`, `letter_to_emoji`'s `style`) are bounded by a **fixed**
+   `maxSelectorBytes` (64) rather than `max_input_bytes` — so an over-long selector
+   is rejected instead of echoed into an error, yet the built-in defaults
+   (`"auto"`, `"regional"`) always pass even under a tiny cap. `checkIntSize`
+   measures int64/uint64 values exactly, and for a larger big.Int uses a
+   bit-length estimate — materializing the exact decimal only when the estimate
+   lands just above the cap (a transient bounded to ~2×max_input_bytes) — so no
+   in-range number is ever over-rejected. The cap itself is
+   **host-only** (see the Dependency-on-base note): a script cannot re-widen or
+   zero it via a `set_` builtin at runtime.
 2. **No host panics from script input.** Builtins validate argument types and
    return script-level errors (`UnpackArgs`, the `default:` arms in `numericText`
    / `parseTimeValue` / `textOf`), never `panic`.
@@ -133,11 +157,12 @@ Three layers must stay in sync (enforced by the doc standard,
 `plan/starpkg文档标准（DOC-STD）`):
 
 - **`README.md`** — every script-facing builtin documented as a backtick
-  whole-word with correct name/signature/args/return/behaviour; the
-  `max_input_bytes` host config (and its `set_max_input_bytes` /
-  `get_max_input_bytes` builtins) under *Host configuration*. Gated by `doccov`
-  (the `doc-coverage: true` leg of the reusable CI workflow), which fails if any
-  builtin is undocumented.
+  whole-word with correct name/signature/args/return/behaviour; the host-only
+  `max_input_bytes` config (its read-only `get_max_input_bytes` builtin, and
+  `set_max_input_bytes` documented as *host-only, not generated* so the
+  `doc-coverage-config` leg still finds the token) under *Host configuration*.
+  Gated by `doccov` (the `doc-coverage: true` leg of the reusable CI workflow),
+  which fails if any builtin is undocumented.
 - **GoDoc** — package comment + a doc comment on every exported symbol
   (`ModuleName`, `Module`, `NewModule`, `LoadModule`), gated by `revive`'s
   `exported` rule in CI. The generated and `internal/gen` files carry their own
