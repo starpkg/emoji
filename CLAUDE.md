@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`starpkg/emoji` is an **L4 domain module** of the Star\* ecosystem: it exposes
+`starpkg/emoji` is an **L3 domain module** of the Star\* ecosystem: it exposes
 emoji ⇄ text conversion to Starlark scripts. A script imports the module and
 calls pure functions that turn `:shortcodes:` into glyphs (and back), or turn a
 plain number, clock time, letter, or punctuation mark into the most similar
@@ -172,9 +172,9 @@ Three layers must stay in sync (enforced by the doc standard,
 
 - **Floor = go 1.19** — this repo's `go.mod` floor; it only rises in this repo's
   own pin-upgrade PR (the SEP/ENG pin upgrade, done last in the series). Pins:
-  `1set/starlet v0.2.1`, `starpkg/base v0.1.0`, `go.starlark.net` at the
+  `1set/starlet v0.2.5`, `starpkg/base v0.1.4`, `go.starlark.net` at the
   ecosystem baseline (`ffb3f39`).
-- **CI matrix** = `[1.19.x, 1.25.x]` via the centralized reusable workflow in
+- **CI matrix** = `[1.19.x, 1.27.x]` via the centralized reusable workflow in
   `1set/meta` (`.github/workflows/go-ci.yml`), pinned to a commit SHA, with
   `doc-coverage: true`.
 - **Bumping the version, the go floor, or tagging are user-confirmed actions** —
